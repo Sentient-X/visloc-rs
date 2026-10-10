@@ -54,7 +54,7 @@ pub use adapter::{
     BasaltVioEstimatorAdapter,
 };
 pub use calibration::{BasaltCalibration, CalibrationError};
-pub use camera::{CameraModelError, DoubleSphereCamera};
+pub use camera::{CameraModelError, DoubleSphereCamera, Kb4};
 pub use euroc::{EurocImageEntry, EurocReaderError, EurocSensorDataset, EurocSensorFrame};
 pub use fast::{GridFastConfig, GridFastDetector};
 pub use patch::{

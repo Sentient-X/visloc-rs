@@ -1190,6 +1190,12 @@ fn double_sphere_projection_jacobian(
     camera: &DoubleSphereCamera,
     point: &Point3<f64>,
 ) -> Option<(Point2<f64>, nalgebra::SMatrix<f64, 2, 4>)> {
+    if camera.kb4.is_some() {
+        let (u, j3) = camera.kb4_project_with_jacobian(&point.coords)?;
+        let mut jac = nalgebra::SMatrix::<f64, 2, 4>::zeros();
+        jac.fixed_view_mut::<2, 3>(0, 0).copy_from(&j3);
+        return Some((Point2::new(u.x, u.y), jac));
+    }
     let projected = camera.project(point)?;
     let p = point.coords;
     let d1 = p.norm();

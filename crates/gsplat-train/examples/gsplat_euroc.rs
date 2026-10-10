@@ -148,6 +148,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     save_ply(&trainer.scene(), &ply)?;
     println!("wrote {}", ply.display());
+    // The registered cameras in the 3DGS `cameras.json` convention (centre and
+    // camera-to-world rotation, OpenCV axes), so a viewer can start from a real
+    // viewpoint on the recovered path instead of an arbitrary one.
+    {
+        let mut views: Vec<_> = dataset.train.iter().chain(&dataset.eval).collect();
+        views.sort_by(|a, b| a.name.cmp(&b.name));
+        let cams: Vec<String> = views
+            .iter()
+            .enumerate()
+            .map(|(id, v)| {
+                let c = v.camera.camera_center();
+                let r = v.camera.rotation.transpose();
+                format!(
+                    "{{\"id\":{id},\"img_name\":\"{}\",\"width\":{},\"height\":{},\"position\":[{},{},{}],\"rotation\":[[{},{},{}],[{},{},{}],[{},{},{}]],\"fx\":{},\"fy\":{}}}",
+                    v.name,
+                    v.camera.camera.width,
+                    v.camera.camera.height,
+                    c.x,
+                    c.y,
+                    c.z,
+                    r[(0, 0)],
+                    r[(0, 1)],
+                    r[(0, 2)],
+                    r[(1, 0)],
+                    r[(1, 1)],
+                    r[(1, 2)],
+                    r[(2, 0)],
+                    r[(2, 1)],
+                    r[(2, 2)],
+                    v.camera.camera.fx,
+                    v.camera.camera.fy
+                )
+            })
+            .collect();
+        let path = ply.with_file_name("cameras.json");
+        std::fs::write(&path, format!("[\n{}\n]\n", cams.join(",\n")))?;
+        println!("wrote {} ({} cameras)", path.display(), cams.len());
+    }
     if let Some(dir) = render_dir {
         // Every registered view, in frame order: a flythrough along the
         // recovered camera path (render_<frame>.png next to the input frame).

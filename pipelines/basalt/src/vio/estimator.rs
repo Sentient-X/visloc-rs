@@ -1494,6 +1494,20 @@ impl BasaltVioEstimator {
         // before touching any landmark/history/map state.
         Self::validate_current_observation_identities(frame_id, timestamp_ns, observations)?;
 
+        // A lens model describes only part of the image (a Kannala-Brandt polynomial turns back
+        // past its calibrated field); a point tracked into the rest has no ray, so it is no
+        // observation. Double Sphere cameras unproject every pixel this frontend tracks, so
+        // for them this drops only observations that would otherwise have been fatal.
+        let usable: Vec<TrackObservation> = observations
+            .iter()
+            .filter(|o| {
+                self.bearing_from_pixel(o.camera_id, &o.pixel).is_some()
+                    && self.raw_bearing_from_pixel(o.camera_id, &o.pixel).is_some()
+            })
+            .cloned()
+            .collect();
+        let observations = usable.as_slice();
+
         // First materialize the complete current measurement. Basalt inserts
         // `prev_opt_flow_res[t_ns]` before `addNewKeyframe`, so a same-frame
         // stereo observation is available even if camera 1 precedes camera 0
