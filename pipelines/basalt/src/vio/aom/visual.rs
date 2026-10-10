@@ -250,6 +250,9 @@ fn project_double_sphere_with_jacobian(
     camera: &DoubleSphereCamera,
     point: Vector3<f64>,
 ) -> Option<(Vector2<f64>, Matrix2x3<f64>)> {
+    if camera.kb4.is_some() {
+        return camera.kb4_project_with_jacobian(&point);
+    }
     if !point.iter().all(|value| value.is_finite()) {
         return None;
     }
@@ -1192,6 +1195,11 @@ pub(super) fn project_double_sphere_with_jacobian_f32(
     camera: &DoubleSphereCamera,
     point: Vector3<f32>,
 ) -> Option<(Vector2<f32>, SMatrix<f32, 2, 3>)> {
+    if camera.kb4.is_some() {
+        // No upstream f32 parity contract exists for kb4: evaluate in f64, store as f32.
+        let (u, j) = camera.kb4_project_with_jacobian(&point.map(f64::from))?;
+        return Some((u.map(|v| v as f32), j.map(|v| v as f32)));
+    }
     if !point.iter().all(|value| value.is_finite()) {
         return None;
     }

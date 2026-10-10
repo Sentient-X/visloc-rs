@@ -5,7 +5,10 @@ use crate::imu::TimestampedImu;
 
 pub const OF_INPUT_CAPACITY: usize = 10;
 pub const VISION_INPUT_CAPACITY: usize = 10;
-pub const IMU_INPUT_CAPACITY: usize = 300;
+/// Upstream holds 300 samples (1.5 s of EuRoC's 200 Hz). Trinet runs at ~400 Hz, and a take
+/// starts with a short IMU lead-in before its first frame, so hold 3 s at 400 Hz. Capacity is
+/// backpressure only; it never changes the arithmetic.
+pub const IMU_INPUT_CAPACITY: usize = 1200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisionFrame {

@@ -248,6 +248,10 @@ name = "basalt_euroc_vio_demo"
 path = "examples/basalt_euroc_vio_demo.rs"
 
 [[example]]
+name = "basalt_trinet_vio"
+path = "examples/basalt_trinet_vio.rs"
+
+[[example]]
 name = "fixed_sift_descriptor_probe"
 path = "examples/fixed_sift_descriptor_probe.rs"
 required-features = ["image-io"]

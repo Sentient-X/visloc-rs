@@ -2697,6 +2697,11 @@ fn lm_token_camera_fingerprint(hash: &mut u64, camera: &DoubleSphereCamera) {
     lm_token_hash_f64(hash, camera.cy);
     lm_token_hash_f64(hash, camera.xi);
     lm_token_hash_f64(hash, camera.alpha);
+    if let Some(m) = camera.kb4 {
+        for value in m.k {
+            lm_token_hash_f64(hash, value);
+        }
+    }
     lm_token_hash_u64(hash, camera.width as u64);
     lm_token_hash_u64(hash, camera.height as u64);
 }

@@ -149,27 +149,42 @@ impl BasaltCalibration {
             .zip(raw.resolution.into_iter())
             .enumerate()
         {
-            if !intrinsic.camera_type.eq_ignore_ascii_case("ds") {
+            let [width, height] = resolution;
+            let i = &intrinsic.intrinsics;
+            let invalid = |source| CalibrationError::InvalidCamera {
+                camera_id: index,
+                source,
+            };
+            let camera = if intrinsic.camera_type.eq_ignore_ascii_case("ds") {
+                let (Some(xi), Some(alpha)) = (i.xi, i.alpha) else {
+                    return Err(CalibrationError::Invalid {
+                        reason: format!("camera {index}: ds needs xi and alpha"),
+                    });
+                };
+                DoubleSphereCamera::new(i.fx, i.fy, i.cx, i.cy, xi, alpha, width, height)
+                    .map_err(invalid)?
+            } else if intrinsic.camera_type.eq_ignore_ascii_case("kb4") {
+                let (Some(k1), Some(k2), Some(k3), Some(k4)) = (i.k1, i.k2, i.k3, i.k4) else {
+                    return Err(CalibrationError::Invalid {
+                        reason: format!("camera {index}: kb4 needs k1..k4"),
+                    });
+                };
+                DoubleSphereCamera::new_kannala_brandt4(
+                    i.fx,
+                    i.fy,
+                    i.cx,
+                    i.cy,
+                    [k1, k2, k3, k4],
+                    width,
+                    height,
+                )
+                .map_err(invalid)?
+            } else {
                 return Err(CalibrationError::UnsupportedCameraType {
                     camera_id: index,
                     camera_type: intrinsic.camera_type,
                 });
-            }
-            let [width, height] = resolution;
-            let camera = DoubleSphereCamera::new(
-                intrinsic.intrinsics.fx,
-                intrinsic.intrinsics.fy,
-                intrinsic.intrinsics.cx,
-                intrinsic.intrinsics.cy,
-                intrinsic.intrinsics.xi,
-                intrinsic.intrinsics.alpha,
-                width,
-                height,
-            )
-            .map_err(|source| CalibrationError::InvalidCamera {
-                camera_id: index,
-                source,
-            })?;
+            };
             cameras.push(camera);
             resolutions.push((width, height));
         }
@@ -308,14 +323,25 @@ struct RawIntrinsic {
     intrinsics: RawDoubleSphere,
 }
 
+/// `ds` carries `xi`/`alpha`, `kb4` carries `k1..k4` (Basalt's calibration JSON).
 #[derive(Debug, Deserialize)]
 struct RawDoubleSphere {
     fx: f64,
     fy: f64,
     cx: f64,
     cy: f64,
-    xi: f64,
-    alpha: f64,
+    #[serde(default)]
+    xi: Option<f64>,
+    #[serde(default)]
+    alpha: Option<f64>,
+    #[serde(default)]
+    k1: Option<f64>,
+    #[serde(default)]
+    k2: Option<f64>,
+    #[serde(default)]
+    k3: Option<f64>,
+    #[serde(default)]
+    k4: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
