@@ -34,7 +34,7 @@ use std::{
 use nalgebra::Vector3;
 use visloc_basalt::{
     config::BasaltConfig, types::ImuSample, BasaltCalibration, BasaltVioEstimatorAdapter,
-    EurocSensorFrame, RawU16Image,
+    EurocSensorFrame, RawU16Image, RollingShutter,
 };
 
 struct Video {
@@ -136,6 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out_dir = PathBuf::from("target/basalt_trinet");
     let mut max_frames: Option<usize> = None;
     let mut skip_frames = 0usize;
+    let mut rolling_shutter = true;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut next = || args.next().ok_or(format!("{a} needs a value"));
@@ -145,6 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--out-dir" => out_dir = PathBuf::from(next()?),
             "--max-frames" => max_frames = Some(next()?.parse()?),
             "--skip-frames" => skip_frames = next()?.parse()?,
+            "--no-rolling-shutter" => rolling_shutter = false,
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
@@ -153,18 +155,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = BasaltConfig::from_json(&fs::read_to_string(&config)?)?;
     let video = read_video(&manifest.join("video.txt"))?;
 
-    let mut frames: Vec<(usize, usize, i64)> = Vec::new();
+    // left_frame,right_frame,timestamp_ns[,readout_ns,centered]
+    let mut frames: Vec<(usize, usize, i64, Option<RollingShutter>)> = Vec::new();
     for line in fs::read_to_string(manifest.join("frames.csv"))?
         .lines()
         .skip(1)
     {
-        let mut f = line.split(',');
-        let (l, r, t) = (f.next(), f.next(), f.next());
-        frames.push((
-            l.ok_or("frames.csv")?.parse()?,
-            r.ok_or("frames.csv")?.parse()?,
-            t.ok_or("frames.csv")?.parse()?,
-        ));
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 3 {
+            return Err("frames.csv: expected at least 3 columns".into());
+        }
+        let rs = match (f.get(3), f.get(4)) {
+            (Some(r), Some(c)) if rolling_shutter => {
+                let readout_ns: i64 = r.parse()?;
+                (readout_ns > 0).then_some(RollingShutter {
+                    readout_ns,
+                    centered: *c == "1",
+                })
+            }
+            _ => None,
+        };
+        frames.push((f[0].parse()?, f[1].parse()?, f[2].parse()?, rs));
     }
     frames.drain(..skip_frames.min(frames.len()));
     if let Some(n) = max_frames {
@@ -189,7 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    let (first_l, first_r, _) = frames[0];
+    let (first_l, first_r, _, _) = frames[0];
     let n = frames.len();
     let mut left = Decoder::open(
         &video.left,
@@ -225,7 +236,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut previous: Option<i64> = None;
     let mut processed = 0usize;
     let mut weak = 0usize;
-    for (index, (lf, _rf, t)) in frames.iter().copied().enumerate() {
+    for (index, (lf, _rf, t, rs)) in frames.iter().copied().enumerate() {
+        adapter.set_rolling_shutter(rs);
         let cam0 = left.next()?;
         let cam1 = right.next()?;
         // IMU after the previous frame, through this one (frame zero: everything up to it).

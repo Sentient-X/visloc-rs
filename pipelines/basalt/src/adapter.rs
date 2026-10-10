@@ -30,6 +30,41 @@ pub struct BasaltAdapterOutput {
     pub imu_count: usize,
 }
 
+/// How a rolling-shutter camera exposed the next frames: rows are read out over `readout_ns`,
+/// and the frame timestamp refers to the middle row when `centered` (else the top row), as
+/// Trinet's `.vts` v4 entries state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RollingShutter {
+    pub readout_ns: i64,
+    pub centered: bool,
+}
+
+/// Where a static point seen at `pixel` was at the frame's reference time, for a camera
+/// turning at `omega` (rad/s, camera frame) with the given rolling shutter.
+pub fn rolling_shutter_point(
+    camera: &crate::DoubleSphereCamera,
+    omega: Vector3<f64>,
+    rs: RollingShutter,
+    pixel: &nalgebra::Point2<f64>,
+) -> Option<nalgebra::Point2<f64>> {
+    let bearing = camera.unproject(pixel)?;
+    let flow = -omega.cross(&bearing);
+    let velocity = match camera.kb4_project_with_jacobian(&bearing) {
+        Some((_, j)) => j * flow,
+        None => {
+            let eps = 1e-6;
+            let a = camera.project(&nalgebra::Point3::from(bearing))?;
+            let b = camera.project(&nalgebra::Point3::from(bearing + flow * eps))?;
+            (b - a) / eps
+        }
+    };
+    let height = f64::from(camera.height);
+    let reference = if rs.centered { height / 2.0 } else { 0.0 };
+    let dt = (pixel.y - reference) / height * rs.readout_ns as f64 * 1e-9;
+    let moved = nalgebra::Point2::new(pixel.x - velocity.x * dt, pixel.y - velocity.y * dt);
+    camera.unproject(&moved).map(|_| moved)
+}
+
 /// A direct-KLT-to-Basalt-VIO boundary with no descriptor/PnP path.
 #[derive(Debug)]
 pub struct BasaltVioEstimatorAdapter {
@@ -45,6 +80,10 @@ pub struct BasaltVioEstimatorAdapter {
     /// to this (it runs concurrently with, and ahead of, the estimator
     /// thread), so it always seeds with zero bias.
     last_gyro_bias: Vector3<f64>,
+    /// When set, each observation is moved to the frame's reference time before the
+    /// estimator sees it (see [`Self::set_rolling_shutter`]).
+    rolling_shutter: Option<RollingShutter>,
+    calibration: crate::BasaltCalibration,
 }
 
 impl BasaltVioEstimatorAdapter {
@@ -63,7 +102,49 @@ impl BasaltVioEstimatorAdapter {
             estimator,
             timing: TimingBreakdown::from_env(),
             last_gyro_bias: Vector3::zeros(),
+            rolling_shutter: None,
+            calibration: calibration.clone(),
         })
+    }
+
+    /// Rolling-shutter timing for the frames that follow (`None`, the default, leaves every
+    /// observation as tracked). With it, an observation in row `y` was exposed
+    /// `(y − y_ref) / height · readout` away from the frame timestamp; under head rotation it
+    /// moves across the image at `J · (−ω × b)` (ω the bias-corrected gyro in the camera frame,
+    /// b its bearing, J the lens Jacobian), so it is moved back by that much to where it was at
+    /// the timestamp. Rotation only: translation in 13 ms of head motion is a small fraction of a
+    /// pixel at working distances.
+    pub fn set_rolling_shutter(&mut self, rolling_shutter: Option<RollingShutter>) {
+        self.rolling_shutter = rolling_shutter;
+    }
+
+    fn compensate_rolling_shutter(
+        &self,
+        rs: RollingShutter,
+        observations: &[crate::types::TrackObservation],
+        imu: &[crate::types::ImuSample],
+    ) -> Vec<crate::types::TrackObservation> {
+        if imu.is_empty() || rs.readout_ns <= 0 {
+            return observations.to_vec();
+        }
+        let omega_imu = imu.iter().map(|s| s.gyro_rad_s).sum::<Vector3<f64>>() / imu.len() as f64
+            - self.last_gyro_bias;
+        observations
+            .iter()
+            .map(|o| {
+                let fixed = (|| {
+                    let camera = self.calibration.camera(o.camera_id)?;
+                    let imu_from_cam = self.calibration.camera_to_imu(o.camera_id)?;
+                    let omega = imu_from_cam.rotation.inverse() * omega_imu;
+                    rolling_shutter_point(camera, omega, rs, &o.pixel)
+                })();
+                let mut out = o.clone();
+                if let Some(p) = fixed {
+                    out.pixel = p;
+                }
+                out
+            })
+            .collect()
     }
 
     /// Returns the optional cumulative timing breakdown for this adapter.
@@ -172,11 +253,14 @@ impl BasaltVioEstimatorAdapter {
         self.timing
             .finish(TimingBucket::AdapterFrontend, frontend_started);
         let tracks = tracks_result?;
+        let compensated = self
+            .rolling_shutter
+            .map(|rs| self.compensate_rolling_shutter(rs, &tracks.observations, &frame.imu));
         let estimator_started = self.timing.start();
         let estimator_result = self.estimator.process_adapter_frame(
             tracks.frame.frame_id,
             tracks.frame.timestamp_ns,
-            &tracks.observations,
+            compensated.as_deref().unwrap_or(&tracks.observations),
             &frame.imu,
             frame.initialization_imu,
             of_images,
@@ -774,5 +858,66 @@ mod tests {
     fn bias_random_walk_uses_inverse_calibration_std_as_sqrt_weight() {
         assert!((inverse_rms_weight(nalgebra::Vector3::repeat(1.0e-4)) - 1.0e4).abs() < 1.0e-9);
         assert!((inverse_rms_weight(nalgebra::Vector3::repeat(1.0e-3)) - 1.0e3).abs() < 1.0e-10);
+    }
+}
+
+#[cfg(test)]
+mod rolling_shutter_tests {
+    use super::*;
+    use nalgebra::{Point2, Point3, UnitQuaternion};
+
+    /// Trinet Pro Stereo's left eye at half resolution, 26.5 ms readout, middle-row stamps.
+    fn trinet() -> crate::DoubleSphereCamera {
+        crate::DoubleSphereCamera::new_kannala_brandt4(
+            294.6,
+            295.6,
+            431.0,
+            283.1,
+            [0.154_377_371, 0.032_201_048, -0.050_931_457, 0.007_933_425],
+            960,
+            540,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_turning_head_is_moved_back_to_the_middle_row_time() {
+        let cam = trinet();
+        let rs = RollingShutter {
+            readout_ns: 26_471_000,
+            centered: true,
+        };
+        let omega = Vector3::new(0.3, 100f64.to_radians(), -0.2); // ~100°/s mostly yaw
+                                                                  // A static point; the camera turns, so in the camera frame it rotates by −ω t.
+        let at = |t: f64, p: &Point3<f64>| {
+            let r = UnitQuaternion::from_scaled_axis(-omega * t);
+            cam.project(&(r * p)).unwrap()
+        };
+        for p in [
+            Point3::new(-1.0, -0.6, 2.0),
+            Point3::new(0.8, 0.5, 1.5),
+            Point3::new(0.1, -0.9, 1.0),
+        ] {
+            let truth = at(0.0, &p);
+            // The row is exposed when the image of the point reaches it: solve t_row by iteration.
+            let mut t = 0.0;
+            for _ in 0..10 {
+                let y = at(t, &p).y;
+                t = (y - 270.0) / 540.0 * 0.026_471;
+            }
+            let seen = at(t, &p);
+            let fixed = rolling_shutter_point(&cam, omega, rs, &seen).unwrap();
+            let before = (seen - truth).norm();
+            let after = (fixed - truth).norm();
+            assert!(
+                before > 1.0,
+                "the test needs a visible shutter effect: {before}"
+            );
+            assert!(
+                after < 0.15 * before,
+                "{p:?}: {before:.2} px -> {after:.2} px"
+            );
+            let _ = Point2::new(0.0, 0.0);
+        }
     }
 }
