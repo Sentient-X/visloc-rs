@@ -365,6 +365,14 @@ pub(crate) fn upstream_trial_projection_coordinates_f32(
     camera: &DoubleSphereCamera,
     point: Vector3<f32>,
 ) -> Vector2<f32> {
+    if camera.kb4.is_some() {
+        // The step-acceptance cost must use the same lens as the factors it judges.
+        return camera
+            .kb4_project_with_jacobian(&point.map(f64::from))
+            .map_or(Vector2::new(f32::NAN, f32::NAN), |(u, _)| {
+                u.map(|v| v as f32)
+            });
+    }
     let r2 = point.x * point.x + point.y * point.y;
     let d1 = point.z.mul_add(point.z, r2).sqrt();
     let k = (camera.xi as f32).mul_add(d1, point.z);
@@ -383,6 +391,11 @@ pub(crate) fn upstream_trial_project_f32(
     camera: &DoubleSphereCamera,
     point: Vector3<f32>,
 ) -> Option<Vector2<f32>> {
+    if camera.kb4.is_some() {
+        return camera
+            .kb4_project_with_jacobian(&point.map(f64::from))
+            .map(|(u, _)| u.map(|v| v as f32));
+    }
     let projected = upstream_trial_projection_coordinates_f32(camera, point);
     let r2 = point.x * point.x + point.y * point.y;
     let d1 = point.z.mul_add(point.z, r2).sqrt();

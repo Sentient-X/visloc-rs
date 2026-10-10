@@ -83,13 +83,24 @@ impl Decoder {
         // Seek half a frame early: the first decoded frame is then exactly `first`.
         let start = (first as f64 - 0.5).max(0.0) / fps;
         let mut child = Command::new("ffmpeg")
-            .args(["-v", "error", "-ss", &format!("{start:.6}"), "-i"])
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-ss",
+                &format!("{start:.6}"),
+                "-i",
+            ])
             .arg(video)
             .args(["-frames:v", &count.to_string()])
             .args([
                 "-vf",
                 &format!("scale={width}:{height}:flags=area,format=gray"),
             ])
+            // Every decoded frame exactly once: the MP4 declares 30 fps but runs at ~29.94, and
+            // a constant-rate output would duplicate a frame every ~500, sliding the video
+            // against its timestamps.
+            .args(["-fps_mode", "passthrough"])
             .args(["-f", "rawvideo", "-pix_fmt", "gray", "-"])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -124,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = PathBuf::from("configs/basalt/euroc_config.json");
     let mut out_dir = PathBuf::from("target/basalt_trinet");
     let mut max_frames: Option<usize> = None;
+    let mut skip_frames = 0usize;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut next = || args.next().ok_or(format!("{a} needs a value"));
@@ -132,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--config" => config = PathBuf::from(next()?),
             "--out-dir" => out_dir = PathBuf::from(next()?),
             "--max-frames" => max_frames = Some(next()?.parse()?),
+            "--skip-frames" => skip_frames = next()?.parse()?,
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
@@ -153,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             t.ok_or("frames.csv")?.parse()?,
         ));
     }
+    frames.drain(..skip_frames.min(frames.len()));
     if let Some(n) = max_frames {
         frames.truncate(n);
     }
@@ -205,7 +219,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let started = Instant::now();
-    let mut cursor = 0usize;
+    // Start the IMU 0.2 s before the first frame, as a recording that began there would.
+    let lead_in = frames[0].2 - 200_000_000;
+    let mut cursor = imu.partition_point(|s| s.timestamp_ns < lead_in);
     let mut previous: Option<i64> = None;
     let mut processed = 0usize;
     let mut weak = 0usize;
