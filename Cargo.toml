@@ -252,6 +252,10 @@ name = "basalt_trinet_vio"
 path = "examples/basalt_trinet_vio.rs"
 
 [[example]]
+name = "ego_eval"
+path = "examples/ego_eval.rs"
+
+[[example]]
 name = "fixed_sift_descriptor_probe"
 path = "examples/fixed_sift_descriptor_probe.rs"
 required-features = ["image-io"]

@@ -1501,8 +1501,11 @@ impl BasaltVioEstimator {
         let usable: Vec<TrackObservation> = observations
             .iter()
             .filter(|o| {
-                self.bearing_from_pixel(o.camera_id, &o.pixel).is_some()
-                    && self.raw_bearing_from_pixel(o.camera_id, &o.pixel).is_some()
+                // An unknown camera is still an error below (fail closed); only a pixel that a
+                // configured lens cannot unproject is dropped.
+                self.camera_model(o.camera_id).is_none()
+                    || (self.bearing_from_pixel(o.camera_id, &o.pixel).is_some()
+                        && self.raw_bearing_from_pixel(o.camera_id, &o.pixel).is_some())
             })
             .cloned()
             .collect();
