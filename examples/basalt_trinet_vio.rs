@@ -20,7 +20,8 @@
 //!
 //! Writes `trajectory.tum` (IMU pose in the VIO world, gravity along −z), `tracking.csv`
 //! (per frame: observations in each eye, IMU samples; few observations means the tracker is
-//! losing the scene) and `summary.txt`.
+//! losing the scene) and `summary.txt`. With `--map`, also `map.csv`: every landmark the
+//! window held, at its last optimized world position (a sparse map for viewers).
 
 use std::{
     collections::BTreeMap,
@@ -137,6 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut max_frames: Option<usize> = None;
     let mut skip_frames = 0usize;
     let mut rolling_shutter = true;
+    let mut map = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut next = || args.next().ok_or(format!("{a} needs a value"));
@@ -147,6 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--max-frames" => max_frames = Some(next()?.parse()?),
             "--skip-frames" => skip_frames = next()?.parse()?,
             "--no-rolling-shutter" => rolling_shutter = false,
+            "--map" => map = true,
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
@@ -236,6 +239,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut previous: Option<i64> = None;
     let mut processed = 0usize;
     let mut weak = 0usize;
+    // Landmark id -> (last optimized world position, frames it was in the window).
+    let mut landmarks: BTreeMap<u64, ([f64; 3], u32)> = BTreeMap::new();
     for (index, (lf, _rf, t, rs)) in frames.iter().copied().enumerate() {
         adapter.set_rolling_shutter(rs);
         let cam0 = left.next()?;
@@ -292,6 +297,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             weak += 1;
         }
         writeln!(tracking, "{lf},{t},{c0},{c1},{}", output.imu_count)?;
+        if map {
+            for (id, p) in adapter.estimator.landmark_positions() {
+                let e = landmarks.entry(id).or_insert(([0.0; 3], 0));
+                *e = ([p.x, p.y, p.z], e.1 + 1);
+            }
+        }
         processed += 1;
         if processed % 900 == 0 {
             let secs = started.elapsed().as_secs_f64();
@@ -303,6 +314,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     tum.flush()?;
     tracking.flush()?;
+    if map {
+        let mut out = BufWriter::new(fs::File::create(out_dir.join("map.csv"))?);
+        writeln!(out, "landmark,x,y,z,frames")?;
+        for (id, ([x, y, z], frames)) in &landmarks {
+            writeln!(out, "{id},{x:.5},{y:.5},{z:.5},{frames}")?;
+        }
+        out.flush()?;
+    }
     let secs = started.elapsed().as_secs_f64();
     let summary = format!(
         "frames={processed}\nseconds_of_video={:.1}\nwall_seconds={secs:.1}\nrealtime_factor={:.3}\nweak_frames={weak}\nimu_samples={}\n",

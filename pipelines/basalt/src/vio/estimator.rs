@@ -683,6 +683,18 @@ impl BasaltVioEstimator {
         self.window_poses.len()
     }
 
+    /// World positions of the landmarks in the active window, as of the last optimization.
+    /// Read-only; for maps and viewers, not the solver.
+    pub fn landmark_positions(&self) -> impl Iterator<Item = (TrackId, Point3<f64>)> + '_ {
+        self.landmark_world.iter().filter_map(|(id, p)| {
+            self.landmarks
+                .landmarks
+                .get(id)
+                .is_some_and(|r| r.status != LandmarkStatus::Removed)
+                .then_some((*id, *p))
+        })
+    }
+
     /// Diagnostic: number of landmarks in the database that are not removed,
     /// indexed by host camera (`result[c]` counts landmarks hosted in camera
     /// `c`).  Read-only; it does not touch solver state.
